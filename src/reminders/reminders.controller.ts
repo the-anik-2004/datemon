@@ -49,6 +49,14 @@ export class RemindersController {
     return this.remindersService.findOne(user.id, id);
   }
 
+  @Get(':id/next-occurrence')
+  async nextOccurrence(
+    @CurrentUser() user: { id: string },
+    @Param('id') id: string,
+  ) {
+    return this.remindersService.previewNextOccurrence(user.id, id);
+  }
+
   @Patch(':id')
   update(
     @CurrentUser() user: { id: string },

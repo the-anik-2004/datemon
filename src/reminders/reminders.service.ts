@@ -9,10 +9,17 @@ import { UpdateReminderDto } from './dto/update-reminders.dto.js';
 import { QueryRemindersDto } from './dto/query-reminders.dto.js';
 import { SnoozePreset, SnoozeReminderDto } from './dto/snooze-reminders.dto.js';
 import { Prisma } from '@prisma/client';
+import { RecurrenceValidator } from '../recurrence/recurrence.validator.js';
+import { RecurrenceCalculator } from '../recurrence/recurrence.calculator.js';
 
 @Injectable()
 export class RemindersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+  private readonly prisma: PrismaService,
+  private readonly recurrenceValidator: RecurrenceValidator,
+  private readonly recurrenceCalculator: RecurrenceCalculator,
+  
+  ) {}
 
   // ============================================================
   // CREATE
@@ -20,6 +27,17 @@ export class RemindersService {
   async create(userId: string, dto: CreateReminderDto) {
     const scheduledAt = new Date(dto.scheduledAt);
     this.assertValidSchedule(scheduledAt, dto.recurrenceType);
+
+    //validate recurrenceData shape
+    if(dto.recurrenceType && dto.recurrenceType!=="NONE"){
+        const result = this.recurrenceValidator.validate(
+          dto.recurrenceType,
+          dto.recurrenceData,
+        );
+        if (!result.valid) {
+          throw new BadRequestException(result.error);
+        }
+    }
 
     return this.prisma.reminder.create({
       data: {
@@ -100,6 +118,17 @@ export class RemindersService {
       this.assertValidSchedule(existingReminder.scheduledAt, 'NONE');
     }
 
+    // After building `data`, before update
+    if (dto.recurrenceType !== undefined && dto.recurrenceType !== 'NONE') {
+      const result = this.recurrenceValidator.validate(
+        dto.recurrenceType,
+        dto.recurrenceData,
+      );
+      if (!result.valid) {
+        throw new BadRequestException(result.error);
+      }
+    }
+
     return this.updateOwned(userId, id, data);
   }
 
@@ -120,30 +149,62 @@ export class RemindersService {
   // ============================================================
   // COMPLETE
   // ============================================================
-  async complete(userId: string, id: string) {
-    const reminder = await this.findOne(userId, id);
+ async complete(userId: string, id: string) {
+  const reminder = await this.findOne(userId, id);
 
-    if (reminder.status === 'COMPLETED') {
-      return reminder; // idempotent
-    }
+  if (reminder.status === 'COMPLETED') {
+    return reminder; // idempotent
+  }
 
-    if (reminder.status === 'CANCELLED') {
-      throw new BadRequestException('Cannot complete a cancelled reminder');
-    }
+  if (reminder.status === 'CANCELLED') {
+    throw new BadRequestException('Cannot complete a cancelled reminder');
+  }
 
-    // For recurring reminders, completing an occurrence advances to the next one.
-    // For V1, we mark COMPLETED. Recurrence rollover is handled in Step 6.
-    if (reminder.recurrenceType !== 'NONE') {
-      // Recurring — leave it ACTIVE, just record completion timestamp
-      // Step 6 will compute the new scheduledAt
-      return this.updateOwned(userId, id, { completedAt: new Date() });
-    }
-
-    return this.updateOwned(userId, id, {
-      status: 'COMPLETED',
-      completedAt: new Date(),
+  // ---- Non-recurring: mark COMPLETED ----
+  if (reminder.recurrenceType === 'NONE') {
+    return this.prisma.reminder.update({
+      where: { id },
+      data: {
+        status: 'COMPLETED',
+        completedAt: new Date(),
+      },
     });
   }
+
+  // ---- Recurring: advance scheduledAt to next occurrence ----
+  const user = await this.prisma.user.findUnique({
+    where: { id: userId },
+    select: { timezone: true },
+  });
+  if (!user) throw new NotFoundException('User not found');
+
+  const next = this.recurrenceCalculator.getNextOccurrence({
+    recurrenceType: reminder.recurrenceType,
+    recurrenceData: reminder.recurrenceData,
+    currentScheduledAt: reminder.scheduledAt,
+    timezone: user.timezone,
+  });
+
+  if (!next) {
+    // Fallback: shouldn't happen for recurring types
+    return this.prisma.reminder.update({
+      where: { id },
+      data: { status: 'COMPLETED', completedAt: new Date() },
+    });
+  }
+
+  // Leave ACTIVE, advance scheduledAt, clear completedAt (it's for the NEXT occurrence now)
+  // TODO (Step 7): cancel PENDING notification for the old occurrence,
+  //                create a new PENDING notification for `next`.
+  return this.prisma.reminder.update({
+    where: { id },
+    data: {
+      scheduledAt: next,
+      status: 'ACTIVE',
+      completedAt: null,
+    },
+  });
+}
 
   // ============================================================
   // CANCEL
@@ -204,6 +265,32 @@ export class RemindersService {
 
     return this.updateOwned(userId, id, { scheduledAt: newTime });
   }
+
+  // ============================================================
+  // PreviewNextOccurrence — grouped view
+  // ============================================================
+  async previewNextOccurrence(userId: string, id: string) {
+  const reminder = await this.findOne(userId, id);
+
+  if (reminder.recurrenceType === 'NONE') {
+    return { next: null, reason: 'not_recurring' };
+  }
+
+  const user = await this.prisma.user.findUnique({
+    where: { id: userId },
+    select: { timezone: true },
+  });
+  if (!user) throw new NotFoundException('User not found');
+
+  const next = this.recurrenceCalculator.getNextOccurrence({
+    recurrenceType: reminder.recurrenceType,
+    recurrenceData: reminder.recurrenceData,
+    currentScheduledAt: reminder.scheduledAt,
+    timezone: user.timezone,
+  });
+
+  return { next, timezone: user.timezone };
+}
 
   // ============================================================
   // DASHBOARD — grouped view
