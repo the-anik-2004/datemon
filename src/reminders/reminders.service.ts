@@ -11,6 +11,7 @@ import { SnoozePreset, SnoozeReminderDto } from './dto/snooze-reminders.dto.js';
 import { Prisma } from '@prisma/client';
 import { RecurrenceValidator } from '../recurrence/recurrence.validator.js';
 import { RecurrenceCalculator } from '../recurrence/recurrence.calculator.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 
 @Injectable()
 export class RemindersService {
@@ -18,7 +19,7 @@ export class RemindersService {
   private readonly prisma: PrismaService,
   private readonly recurrenceValidator: RecurrenceValidator,
   private readonly recurrenceCalculator: RecurrenceCalculator,
-  
+  private readonly notifications: NotificationsService,
   ) {}
 
   // ============================================================
@@ -28,18 +29,16 @@ export class RemindersService {
     const scheduledAt = new Date(dto.scheduledAt);
     this.assertValidSchedule(scheduledAt, dto.recurrenceType);
 
-    //validate recurrenceData shape
-    if(dto.recurrenceType && dto.recurrenceType!=="NONE"){
-        const result = this.recurrenceValidator.validate(
-          dto.recurrenceType,
-          dto.recurrenceData,
-        );
-        if (!result.valid) {
-          throw new BadRequestException(result.error);
-        }
+    const recurrenceType = dto.recurrenceType ?? 'NONE';
+    const recurrenceResult = this.recurrenceValidator.validate(
+      recurrenceType,
+      dto.recurrenceData,
+    );
+    if (!recurrenceResult.valid) {
+      throw new BadRequestException(recurrenceResult.error);
     }
 
-    return this.prisma.reminder.create({
+    const reminder = await this.prisma.reminder.create({
       data: {
         userId,
         title: dto.title,
@@ -47,12 +46,14 @@ export class RemindersService {
         scheduledAt,
         priority: dto.priority ?? 'NORMAL',
         category: dto.category ?? 'OTHER',
-        recurrenceType: dto.recurrenceType ?? 'NONE',
+        recurrenceType,
         recurrenceData: dto.recurrenceData
           ? (dto.recurrenceData as Prisma.InputJsonValue)
           : Prisma.JsonNull,
       },
     });
+    await this.notifications.scheduleForReminder(reminder);
+    return reminder;
   }
 
   // ============================================================
@@ -105,9 +106,22 @@ export class RemindersService {
     if (dto.description !== undefined) data.description = dto.description;
     if (dto.priority !== undefined) data.priority = dto.priority;
     if (dto.category !== undefined) data.category = dto.category;
+    const recurrenceType = dto.recurrenceType ?? existingReminder.recurrenceType;
+    const recurrenceData = dto.recurrenceType === 'NONE'
+      ? dto.recurrenceData ?? null
+      : dto.recurrenceData ?? existingReminder.recurrenceData;
+    const recurrenceResult = this.recurrenceValidator.validate(
+      recurrenceType,
+      recurrenceData,
+    );
+    if (!recurrenceResult.valid) {
+      throw new BadRequestException(recurrenceResult.error);
+    }
     if (dto.recurrenceType !== undefined) data.recurrenceType = dto.recurrenceType;
-    if (dto.recurrenceData !== undefined) {
-      data.recurrenceData = dto.recurrenceData as Prisma.InputJsonValue;
+    if (dto.recurrenceData !== undefined || dto.recurrenceType === 'NONE') {
+      data.recurrenceData = recurrenceData === null
+        ? Prisma.JsonNull
+        : recurrenceData as Prisma.InputJsonValue;
     }
     if (dto.scheduledAt !== undefined) {
       const scheduledAt = new Date(dto.scheduledAt);
@@ -118,18 +132,9 @@ export class RemindersService {
       this.assertValidSchedule(existingReminder.scheduledAt, 'NONE');
     }
 
-    // After building `data`, before update
-    if (dto.recurrenceType !== undefined && dto.recurrenceType !== 'NONE') {
-      const result = this.recurrenceValidator.validate(
-        dto.recurrenceType,
-        dto.recurrenceData,
-      );
-      if (!result.valid) {
-        throw new BadRequestException(result.error);
-      }
-    }
-
-    return this.updateOwned(userId, id, data);
+    const reminder = await this.updateOwned(userId, id, data);
+    await this.notifications.scheduleForReminder(reminder);
+    return reminder;
   }
 
   // ============================================================
@@ -137,6 +142,7 @@ export class RemindersService {
   // ============================================================
   async remove(userId: string, id: string) {
     await this.findOne(userId, id);
+    await this.notifications.cancelPendingForReminder(id);
     const result = await this.prisma.reminder.deleteMany({
       where: { id, userId },
     });
@@ -162,13 +168,12 @@ export class RemindersService {
 
   // ---- Non-recurring: mark COMPLETED ----
   if (reminder.recurrenceType === 'NONE') {
-    return this.prisma.reminder.update({
-      where: { id },
-      data: {
-        status: 'COMPLETED',
-        completedAt: new Date(),
-      },
+    const completed = await this.updateOwned(userId, id, {
+      status: 'COMPLETED',
+      completedAt: new Date(),
     });
+    await this.notifications.cancelPendingForReminder(id);
+    return completed;
   }
 
   // ---- Recurring: advance scheduledAt to next occurrence ----
@@ -187,23 +192,21 @@ export class RemindersService {
 
   if (!next) {
     // Fallback: shouldn't happen for recurring types
-    return this.prisma.reminder.update({
-      where: { id },
-      data: { status: 'COMPLETED', completedAt: new Date() },
+    const completed = await this.updateOwned(userId, id, {
+      status: 'COMPLETED',
+      completedAt: new Date(),
     });
+    await this.notifications.cancelPendingForReminder(id);
+    return completed;
   }
 
-  // Leave ACTIVE, advance scheduledAt, clear completedAt (it's for the NEXT occurrence now)
-  // TODO (Step 7): cancel PENDING notification for the old occurrence,
-  //                create a new PENDING notification for `next`.
-  return this.prisma.reminder.update({
-    where: { id },
-    data: {
-      scheduledAt: next,
-      status: 'ACTIVE',
-      completedAt: null,
-    },
+  const advanced = await this.updateOwned(userId, id, {
+    scheduledAt: next,
+    status: 'ACTIVE',
+    completedAt: null,
   });
+  await this.notifications.scheduleForReminder(advanced);
+  return advanced;
 }
 
   // ============================================================
@@ -211,7 +214,9 @@ export class RemindersService {
   // ============================================================
   async cancel(userId: string, id: string) {
     await this.findOne(userId, id);
-    return this.updateOwned(userId, id, { status: 'CANCELLED' });
+    const cancelled = await this.updateOwned(userId, id, { status: 'CANCELLED' });
+    await this.notifications.cancelPendingForReminder(id);
+    return cancelled;
   }
 
   // ============================================================
@@ -263,7 +268,9 @@ export class RemindersService {
         throw new BadRequestException('Invalid snooze preset');
     }
 
-    return this.updateOwned(userId, id, { scheduledAt: newTime });
+    const snoozed = await this.updateOwned(userId, id, { scheduledAt: newTime });
+    await this.notifications.scheduleForReminder(snoozed);
+    return snoozed;
   }
 
   // ============================================================

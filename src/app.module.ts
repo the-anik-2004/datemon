@@ -11,6 +11,9 @@ import { PrismaModule } from './prisma/prisma.module.js';
 import { MailModule } from './mail/mail.module.js';
 import { OtpModule } from './otp/otp.module.js';
 import { RemindersModule } from './reminders/reminders.module.js';
+import { DevicesModule } from './devices/devices.module.js';
+import { NotificationsModule } from './notifications/notifications.module.js';
+import { ScheduleModule } from '@nestjs/schedule';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -29,12 +32,15 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
         limit: 60,
       },
     ]),
+    ScheduleModule.forRoot(),
     PrismaModule,
     AuthModule,
     UsersModule,
     MailModule,
     OtpModule,
     RemindersModule,
+    DevicesModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [
