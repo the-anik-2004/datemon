@@ -8,7 +8,7 @@ import { CreateReminderDto } from './dto/create-reminders.dto.js';
 import { UpdateReminderDto } from './dto/update-reminders.dto.js';
 import { QueryRemindersDto } from './dto/query-reminders.dto.js';
 import { SnoozePreset, SnoozeReminderDto } from './dto/snooze-reminders.dto.js';
-import { ReminderStatus, Prisma } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class RemindersService {
@@ -57,8 +57,8 @@ export class RemindersService {
     return this.prisma.reminder.findMany({
       where,
       orderBy: { scheduledAt: 'asc' },
-      take: query.take ?? 50,
-      skip: query.skip ?? 0,
+      take: Math.min(Math.max(query.take ?? 50, 1), 100),
+      skip: Math.max(query.skip ?? 0, 0),
     });
   }
 
@@ -96,9 +96,11 @@ export class RemindersService {
       const recurrenceType = dto.recurrenceType ?? existingReminder.recurrenceType;
       this.assertValidSchedule(scheduledAt, recurrenceType);
       data.scheduledAt = scheduledAt;
+    } else if (dto.recurrenceType === 'NONE') {
+      this.assertValidSchedule(existingReminder.scheduledAt, 'NONE');
     }
 
-    return this.prisma.reminder.update({ where: { id }, data });
+    return this.updateOwned(userId, id, data);
   }
 
   // ============================================================
@@ -106,7 +108,12 @@ export class RemindersService {
   // ============================================================
   async remove(userId: string, id: string) {
     await this.findOne(userId, id);
-    await this.prisma.reminder.delete({ where: { id } });
+    const result = await this.prisma.reminder.deleteMany({
+      where: { id, userId },
+    });
+    if (result.count === 0) {
+      throw new NotFoundException('Reminder not found');
+    }
     return { success: true };
   }
 
@@ -129,18 +136,12 @@ export class RemindersService {
     if (reminder.recurrenceType !== 'NONE') {
       // Recurring — leave it ACTIVE, just record completion timestamp
       // Step 6 will compute the new scheduledAt
-      return this.prisma.reminder.update({
-        where: { id },
-        data: { completedAt: new Date() },
-      });
+      return this.updateOwned(userId, id, { completedAt: new Date() });
     }
 
-    return this.prisma.reminder.update({
-      where: { id },
-      data: {
-        status: 'COMPLETED',
-        completedAt: new Date(),
-      },
+    return this.updateOwned(userId, id, {
+      status: 'COMPLETED',
+      completedAt: new Date(),
     });
   }
 
@@ -149,10 +150,7 @@ export class RemindersService {
   // ============================================================
   async cancel(userId: string, id: string) {
     await this.findOne(userId, id);
-    return this.prisma.reminder.update({
-      where: { id },
-      data: { status: 'CANCELLED' },
-    });
+    return this.updateOwned(userId, id, { status: 'CANCELLED' });
   }
 
   // ============================================================
@@ -176,14 +174,17 @@ export class RemindersService {
         newTime = new Date(now.getTime() + 60 * 60 * 1000);
         break;
       case SnoozePreset.TOMORROW: {
-        newTime = new Date(now);
-        newTime.setDate(newTime.getDate() + 1);
-        // Same time tomorrow
-        newTime.setHours(
-          reminder.scheduledAt.getHours(),
-          reminder.scheduledAt.getMinutes(),
-          0,
-          0,
+        const scheduledAt = reminder.scheduledAt;
+        newTime = new Date(
+          Date.UTC(
+            scheduledAt.getUTCFullYear(),
+            scheduledAt.getUTCMonth(),
+            scheduledAt.getUTCDate() + 1,
+            scheduledAt.getUTCHours(),
+            scheduledAt.getUTCMinutes(),
+            0,
+            0,
+          ),
         );
         break;
       }
@@ -201,10 +202,7 @@ export class RemindersService {
         throw new BadRequestException('Invalid snooze preset');
     }
 
-    return this.prisma.reminder.update({
-      where: { id },
-      data: { scheduledAt: newTime },
-    });
+    return this.updateOwned(userId, id, { scheduledAt: newTime });
   }
 
   // ============================================================
@@ -213,14 +211,11 @@ export class RemindersService {
   async dashboard(userId: string) {
     const now = new Date();
 
-    const startOfToday = new Date(now);
-    startOfToday.setHours(0, 0, 0, 0);
-
-    const startOfTomorrow = new Date(startOfToday);
-    startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
-
-    const startOfNextWeek = new Date(startOfToday);
-    startOfNextWeek.setDate(startOfNextWeek.getDate() + 7);
+    const startOfToday = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    );
+    const startOfTomorrow = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
+    const startOfNextWeek = new Date(startOfToday.getTime() + 7 * 24 * 60 * 60 * 1000);
 
     const reminders = await this.prisma.reminder.findMany({
       where: {
@@ -264,6 +259,21 @@ export class RemindersService {
   // ============================================================
   // HELPERS
   // ============================================================
+  private async updateOwned(
+    userId: string,
+    id: string,
+    data: Prisma.ReminderUpdateManyMutationInput,
+  ) {
+    const result = await this.prisma.reminder.updateMany({
+      where: { id, userId },
+      data,
+    });
+    if (result.count === 0) {
+      throw new NotFoundException('Reminder not found');
+    }
+    return this.findOne(userId, id);
+  }
+
   private assertValidSchedule(date: Date, recurrenceType?: string) {
     if (isNaN(date.getTime())) {
       throw new BadRequestException('Invalid scheduledAt');

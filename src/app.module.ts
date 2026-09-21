@@ -10,6 +10,7 @@ import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { MailModule } from './mail/mail.module.js';
 import { OtpModule } from './otp/otp.module.js';
+import { RemindersModule } from './reminders/reminders.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -33,6 +34,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     UsersModule,
     MailModule,
     OtpModule,
+    RemindersModule,
   ],
   controllers: [AppController],
   providers: [
