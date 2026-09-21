@@ -14,6 +14,7 @@ import { RemindersModule } from './reminders/reminders.module.js';
 import { DevicesModule } from './devices/devices.module.js';
 import { NotificationsModule } from './notifications/notifications.module.js';
 import { ScheduleModule } from '@nestjs/schedule';
+import { AiModule } from './ai/ai.module.js';
 
 export const { ObserveModule, ObserveInstrument } = createObserveModule();
 
@@ -41,6 +42,7 @@ export const { ObserveModule, ObserveInstrument } = createObserveModule();
     RemindersModule,
     DevicesModule,
     NotificationsModule,
+    AiModule,
   ],
   controllers: [AppController],
   providers: [
