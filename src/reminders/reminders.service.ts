@@ -162,12 +162,9 @@ export class RemindersService {
 
   // ---- Non-recurring: mark COMPLETED ----
   if (reminder.recurrenceType === 'NONE') {
-    return this.prisma.reminder.update({
-      where: { id },
-      data: {
-        status: 'COMPLETED',
-        completedAt: new Date(),
-      },
+    return this.updateOwned(userId, id, {
+      status: 'COMPLETED',
+      completedAt: new Date(),
     });
   }
 
@@ -187,22 +184,19 @@ export class RemindersService {
 
   if (!next) {
     // Fallback: shouldn't happen for recurring types
-    return this.prisma.reminder.update({
-      where: { id },
-      data: { status: 'COMPLETED', completedAt: new Date() },
+    return this.updateOwned(userId, id, {
+      status: 'COMPLETED',
+      completedAt: new Date(),
     });
   }
 
   // Leave ACTIVE, advance scheduledAt, clear completedAt (it's for the NEXT occurrence now)
   // TODO (Step 7): cancel PENDING notification for the old occurrence,
   //                create a new PENDING notification for `next`.
-  return this.prisma.reminder.update({
-    where: { id },
-    data: {
-      scheduledAt: next,
-      status: 'ACTIVE',
-      completedAt: null,
-    },
+  return this.updateOwned(userId, id, {
+    scheduledAt: next,
+    status: 'ACTIVE',
+    completedAt: null,
   });
 }
 
