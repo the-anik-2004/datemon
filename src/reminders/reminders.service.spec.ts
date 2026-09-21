@@ -2,6 +2,9 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RemindersService } from './reminders.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { RecurrenceValidator } from '../recurrence/recurrence.validator.js';
+import { RecurrenceCalculator } from '../recurrence/recurrence.calculator.js';
+import { NotificationsService } from '../notifications/notifications.service.js';
 
 describe('RemindersService', () => {
   let service: RemindersService;
@@ -28,6 +31,12 @@ describe('RemindersService', () => {
       providers: [
         RemindersService,
         { provide: PrismaService, useValue: prisma },
+        { provide: RecurrenceValidator, useValue: { validate: vi.fn().mockReturnValue({ valid: true }) } },
+        { provide: RecurrenceCalculator, useValue: { getNextOccurrence: vi.fn() } },
+        { provide: NotificationsService, useValue: {
+          scheduleForReminder: vi.fn(),
+          cancelPendingForReminder: vi.fn(),
+        } },
       ],
     }).compile();
 

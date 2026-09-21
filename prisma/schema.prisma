@@ -44,16 +44,17 @@ enum RecurrenceType {
   YEARLY
 }
 
-enum NotificationStatus {
-  PENDING
-  SENT
-  FAILED
-  CANCELLED
-}
-
 enum Platform {
   ANDROID
   IOS
+}
+
+enum NotificationStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+  CANCELLED
 }
 
 // ============================================
@@ -106,6 +107,7 @@ model Notification {
   scheduledAt DateTime
   sentAt      DateTime?
   status      NotificationStatus @default(PENDING)
+  error       String?
   createdAt   DateTime           @default(now())
   updatedAt   DateTime           @updatedAt
 
