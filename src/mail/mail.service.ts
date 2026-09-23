@@ -40,33 +40,59 @@ export class MailService {
   }
 
   async sendOtpEmail(to: string, otp: string, name: string) {
+    const mailDisabled = this.config.get<string>('MAIL_DISABLED') === 'true';
+    const failOnError = this.config.get<string>('MAIL_FAIL_ON_ERROR') === 'true';
+
+    if (mailDisabled) {
+      this.logger.warn(
+        'Email delivery is disabled via MAIL_DISABLED; skipping OTP email send.',
+      );
+      return;
+    }
+
     const from = this.config.get<string>('MAIL_FROM') ?? 'DATEMON <noreply@datemon.app>';
     const replyTo = this.config.get<string>('MAIL_REPLY_TO') ?? from;
     const minutes = this.config.get<string>('OTP_EXPIRES_MINUTES') ?? '5';
 
-    const info = await this.transporter.sendMail({
-      from,
-      replyTo,
-      to,
-      subject: 'Your DATEMON verification code',
-      text: `Hi ${name},\n\nYour DATEMON verification code is: ${otp}\n\nIt expires in ${minutes} minutes.\n\nIf you didn't request this, ignore this email.`,
-      html: `
-        <div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: auto;">
-          <h2>Verify your DATEMON account</h2>
-          <p>Hi ${name},</p>
-          <p>Your verification code is:</p>
-          <p style="font-size: 32px; font-weight: bold; letter-spacing: 6px; background: #f4f4f4; padding: 16px; text-align: center; border-radius: 8px;">
-            ${otp}
-          </p>
-          <p>This code expires in <strong>${minutes} minutes</strong>.</p>
-          <p style="color: #888; font-size: 12px;">If you didn't request this, ignore this email.</p>
-        </div>
-      `,
-    });
+    try {
+      const info = await this.transporter.sendMail({
+        from,
+        replyTo,
+        to,
+        subject: 'Your DATEMON verification code',
+        text: `Hi ${name},\n\nYour DATEMON verification code is: ${otp}\n\nIt expires in ${minutes} minutes.\n\nIf you didn't request this, ignore this email.`,
+        html: `
+          <div style="font-family: -apple-system, sans-serif; max-width: 480px; margin: auto;">
+            <h2>Verify your DATEMON account</h2>
+            <p>Hi ${name},</p>
+            <p>Your verification code is:</p>
+            <p style="font-size: 32px; font-weight: bold; letter-spacing: 6px; background: #f4f4f4; padding: 16px; text-align: center; border-radius: 8px;">
+              ${otp}
+            </p>
+            <p>This code expires in <strong>${minutes} minutes</strong>.</p>
+            <p style="color: #888; font-size: 12px;">If you didn't request this, ignore this email.</p>
+          </div>
+        `,
+      });
 
-    const previewUrl = nodemailer.getTestMessageUrl(info);
-    if (previewUrl) {
-      this.logger.log(`📧 OTP email preview: ${previewUrl}`);
+      const previewUrl = nodemailer.getTestMessageUrl(info);
+      if (previewUrl) {
+        this.logger.log(`📧 OTP email preview: ${previewUrl}`);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `Failed to send OTP email to ${to}: ${message}`,
+        error instanceof Error ? error.stack : undefined,
+      );
+
+      if (failOnError) {
+        throw error;
+      }
+
+      this.logger.warn(
+        'Continuing because MAIL_FAIL_ON_ERROR is disabled. Configure a production mail provider or set MAIL_DISABLED=false.',
+      );
     }
   }
 }
