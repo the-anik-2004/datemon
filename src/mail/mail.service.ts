@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as nodemailer from 'nodemailer';
 
@@ -41,13 +41,14 @@ export class MailService {
 
   async sendOtpEmail(to: string, otp: string, name: string) {
     const mailDisabled = this.config.get<string>('MAIL_DISABLED') === 'true';
-    const failOnError = this.config.get<string>('MAIL_FAIL_ON_ERROR') === 'true';
 
     if (mailDisabled) {
       this.logger.warn(
         'Email delivery is disabled via MAIL_DISABLED; skipping OTP email send.',
       );
-      return;
+      throw new ServiceUnavailableException(
+        'Verification email delivery is currently unavailable. Please try again later.',
+      );
     }
 
     const from = this.config.get<string>('MAIL_FROM') ?? 'DATEMON <noreply@datemon.app>';
@@ -86,12 +87,8 @@ export class MailService {
         error instanceof Error ? error.stack : undefined,
       );
 
-      if (failOnError) {
-        throw error;
-      }
-
-      this.logger.warn(
-        'Continuing because MAIL_FAIL_ON_ERROR is disabled. Configure a production mail provider or set MAIL_DISABLED=false.',
+      throw new ServiceUnavailableException(
+        'Verification email delivery is currently unavailable. Please try again later.',
       );
     }
   }
