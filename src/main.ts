@@ -18,7 +18,7 @@ async function bootstrap() {
 
   for (const port of fallbackPorts) {
     try {
-      await app.listen(port);
+      await app.listen(port, '0.0.0.0');;
       console.log(`DATEMON backend running on http://localhost:${port}/api/v1`);
       return;
     } catch (error: any) {
